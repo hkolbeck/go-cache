@@ -1,21 +1,24 @@
 package relativistic
 
-import "sync"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 type Reader struct {
 	epoch int64
 }
 
-type Writer struct {
-	lock  *sync.Mutex
+type writer struct {
 	epoch int64
+	sync.Mutex
 }
 
 type Relativistic struct {
 	readers chan<- *Reader
-	writers chan<- *sync.Mutex
+	writers chan<- *writer
 	epoch   int64
-	lock    *sync.Mutex
+	sync.Mutex
 }
 
 func New(queueSize int) *Relativistic {
@@ -33,19 +36,19 @@ func New(queueSize int) *Relativistic {
 		for {
 			select {
 			case r := <-readers:
-				if *r == 0 {
+				if r.epoch == 0 {
 					delete(currentReaders, r)
 				} else {
 					currentReaders[r] = true
 				}
 			case w := <-writers:
 				for reader := range currentReaders {
-					if reader.epoch <= writer.epoch {
+					if reader.epoch <= w.epoch {
 						writers <- w
 						continue ReaderLoop
 					}
 				}
-				w.lock.Unlock()
+				w.Unlock()
 			}
 		}
 	}()
@@ -54,32 +57,23 @@ func New(queueSize int) *Relativistic {
 		readers: readers,
 		writers: writers,
 		epoch:   1,
-		lock:    *sync.Mutex{},
 	}
 }
 
-func (r *Relativistic) startRead() *Reader {
-	reader := &reader{r.epoch}
+func (r *Relativistic) StartRead() *Reader {
+	reader := &Reader{r.epoch}
 	r.readers <- reader
 	return reader
 }
 
-func (r *Relativistic) endRead(reader *Reader) {
+func (r *Relativistic) EndRead(reader *Reader) {
 	reader.epoch = 0
 	r.readers <- reader
 }
 
-func (r *Relativistic) startWrite() *Writer {
-	lock.Lock()
-	return &Writer{&sync.Mutex, r.epoch}
-}
-
-func (r *Relativistic) waitForReaders(writer *Writer) {
-	writer.lock.Lock()
-	r.writers <- writer
-	writer.lock.Lock()
-}
-
-func (r *Relativistic) endWrite() {
-	lock.Unlock()
+func (r *Relativistic) WaitForReaders() {
+	w := &writer{epoch: atomic.AddInt64(&(r.epoch), 1)}
+	w.Lock()
+	r.writers <- w
+	w.Lock()
 }
